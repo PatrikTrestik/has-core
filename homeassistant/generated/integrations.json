@@ -2849,6 +2849,11 @@
       "iot_class": "local_polling",
       "name": "Nibe Heat Pump"
     },
+    "nicegate": {
+      "config_flow": true,
+      "iot_class": "local_push",
+      "name": "Nice gate"
+    },
     "nightscout": {
       "config_flow": true,
       "iot_class": "cloud_polling",
