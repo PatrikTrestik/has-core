@@ -286,6 +286,7 @@ FLOWS = {
         "nextdns",
         "nfandroidtv",
         "nibe_heatpump",
+        "nicegate",
         "nightscout",
         "nina",
         "nmap_tracker",
