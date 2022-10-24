@@ -34,7 +34,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Nice gate cover."""
     api = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([NiceGate(hass, api, entry.unique_id)])
+    async_add_entities([NiceGate(hass, api, entry.data["mac"])])
 
 
 class NiceGate(CoordinatorEntity, CoverEntity):

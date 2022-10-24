@@ -31,10 +31,10 @@ class NiceGateApi:
         self.command_sequence = 1
         self.command_id = 0
         self.session_id = 1
-        self.connection = False
         self.gate_status = None
         self.serv_reader: asyncio.StreamReader = None
         self.serv_writer: asyncio.StreamWriter = None
+        self._loop_task: asyncio.Task = None
         self.update_callback = None
 
     def set_update_callback(self, callback):
@@ -100,7 +100,6 @@ class NiceGateApi:
             while True:
                 msg = await self.__recvall()
                 if msg == "":
-                    await self.connect()
                     break
                 await self.__process_event(msg)
         except OSError as err_msg:
@@ -112,10 +111,14 @@ class NiceGateApi:
         data = b""
         while True:
             try:
-                part = await self.serv_reader.read(BUFF_SIZE)
+                part = await self.serv_reader.readuntil(b"\x03")
+                if part == b"":
+                    _LOGGER.error("Disconnected")
+                    self.disconnect()
             except OSError as error_msg:
                 # a "real" error occurred
                 _LOGGER.error(error_msg)
+                self.disconnect()
                 break
             else:
                 data += part
@@ -160,9 +163,16 @@ class NiceGateApi:
             )
             + end_request
         )
-        _LOGGER.debug(msg)
-        self.serv_writer.write(msg)
-        await self.serv_writer.drain()
+        try:
+            if self.serv_writer is None:
+                self.disconnect()
+                return
+            _LOGGER.debug(msg)
+            self.serv_writer.write(msg)
+            await self.serv_writer.drain()
+        except ConnectionError as error_msg:
+            _LOGGER.error(error_msg)
+            self.disconnect()
 
     async def __process_event(self, msg):
         resp = ET.fromstring(msg)
@@ -185,67 +195,72 @@ class NiceGateApi:
 
     async def connect(self):
         """Connect to IT4WIFI."""
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS)
-        ctx.check_hostname = False
-        # self.serv = ctx.wrap_socket(
-        #     socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # )
-        # self.serv.connect((self.host, 443))
-        reader, writer = await asyncio.open_connection(self.host, 443, ssl=ctx)
-        self.serv_reader = reader
-        self.serv_writer = writer
-
-        await self.__build_message("VERIFY", f'<User username="{self.username}"/>')
-        verify = await self.__recvall()
-        if re.search(r'Authentication\sid=[\'"]?([^\'" >]+)', verify):
-            await self.__build_message(
-                "CONNECT",
-                '<Authentication username="{}" cc="{}"/>'.format(
-                    self.username, self.client_challenge
-                ),
-            )
-            connect = await self.__recvall()
-            self.__find_server_challenge(connect)
-            self.connection = True
-            # start loop
-            asyncio.create_task(self.__recvloop())
+        if self.serv_writer is not None:
             return True
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS)
+            ctx.check_hostname = False
+            if self.serv_writer is not None or self.serv_reader is not None:
+                self.disconnect()
+            if self._loop_task is not None:
+                self._loop_task.cancel()
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, 443, ssl=ctx), timeout=10
+            )
+            self.serv_reader = reader
+            self.serv_writer = writer
 
-        _LOGGER.warning("No user found")
-        self.connection = False
+            await self.__build_message("VERIFY", f'<User username="{self.username}"/>')
+            verify = await self.__recvall()
+            if re.search(r'Authentication\sid=[\'"]?([^\'" >]+)', verify):
+                await self.__build_message(
+                    "CONNECT",
+                    '<Authentication username="{}" cc="{}"/>'.format(
+                        self.username, self.client_challenge
+                    ),
+                )
+                connect = await self.__recvall()
+                self.__find_server_challenge(connect)
+                # start loop
+                self._loop_task = asyncio.create_task(self.__recvloop())
+                asyncio.create_task(self.status())
+                return True
+            _LOGGER.warning("No user found")
+        except ConnectionError as error_msg:
+            _LOGGER.error(error_msg)
+
         return False
 
     async def status(self, cmd="STATUS"):
         """Get IT4WIFI status."""
-        if not self.connection:
-            await self.connect()
-        await self.__build_message(cmd, "")
+        if await self.connect():
+            await self.__build_message(cmd, "")
 
     async def change(self, command):
         """Open, close or stop gates."""
-        if not self.connection:
-            await self.connect()
-        await self.__build_message(
-            "CHANGE",
-            '<Devices><Device id="1">\n<Services><DoorAction>{}</DoorAction>\n</Services ></Device></Devices>'.format(
-                command
-            ),
-        )
+        if await self.connect():
+            await self.__build_message(
+                "CHANGE",
+                '<Devices><Device id="1">\n<Services><DoorAction>{}</DoorAction>\n</Services ></Device></Devices>'.format(
+                    command
+                ),
+            )
 
     async def check(self):
         """Ping for prevent sokcet close."""
-        if not self.connection:
-            await self.connect()
-        await self.__build_message(
-            "CHECK",
-            '<Authentication id="{}" username="{}"/>'.format(
-                self.session_id, self.username
-            ),
-        )
+        if await self.connect():
+            await self.__build_message(
+                "CHECK",
+                '<Authentication id="{}" username="{}"/>'.format(
+                    self.session_id, self.username
+                ),
+            )
 
     def disconnect(self):
         """Disconnect from IT4WIFI."""
-        self.connection = False
         self.command_id = 0
         self.command_sequence = 1
-        self.serv_writer.close()
+        if self.serv_writer is not None:
+            self.serv_writer.close()
+        self.serv_writer = None
+        self.serv_reader = None
