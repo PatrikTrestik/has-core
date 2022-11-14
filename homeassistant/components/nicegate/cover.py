@@ -45,6 +45,7 @@ class NiceGate(CoordinatorEntity, CoverEntity):
 
     def __init__(self, hass, api: NiceGateApi, device_id) -> None:
         """Initialize an NiceGate."""
+        self._attr_unique_id = device_id
         self._device_id = device_id
         self.api = api
         super().__init__(DataUpdateCoordinator(hass, _LOGGER, name="Nice Gate"))
